@@ -15,6 +15,12 @@ data Rhs  = IfRhs Type Cond Expr Expr | FnCallRhs Type String [Expr] | ExprRhs E
 data Cond = Cond Ordering Expr Expr deriving (Eq, Show)
 data FnBody = FnBody { fnBodyArgs :: [Type], fnBodyReturn :: Type, fnBodyBody :: [(String, Rhs)] }
 
+dummyVoidVal :: Expr
+dummyVoidVal = PrimIntExpr U8 0
+
+extractExpr :: Maybe Expr -> Expr
+extractExpr = maybe dummyVoidVal id
+
 exprType :: Expr -> Type
 exprType (PrimIntExpr a _) = Prim a
 exprType (PrimFloatExpr a _) = Prim a
@@ -48,65 +54,64 @@ assignEnv x y f z
   | z == x = y
   | otherwise = f z
 
-checkExprValidity :: Expr -> (String -> Maybe Type) -> Bool
-checkExprValidity (PrimIntExpr a b) _ = (isIntType a) && (inBounds b $ intBounds a)
-checkExprValidity (PrimFloatExpr a b) _ = isFloatType a
-checkExprValidity (DataExpr a b c) vars = all f (zip c t) && length c == length t where
+checkExprValidity :: (String -> Maybe Type) -> Expr -> Bool
+checkExprValidity _ (PrimIntExpr a b) = (isIntType a) && (inBounds b $ intBounds a)
+checkExprValidity _ (PrimFloatExpr a b) = isFloatType a
+checkExprValidity vars (DataExpr a b c) = all f (zip c t) && length c == length t where
   t = (dtCtors a) !! b
-  f (x, y) = checkExprValidity x vars && exprType x == y
-checkExprValidity (VarExpr a b) vars = vars b == Just a
+  f (x, y) = checkExprValidity vars x && exprType x == y
+checkExprValidity vars (VarExpr a b) = vars b == Just a
 
-checkCondValidity :: Cond -> (String -> Maybe Type) -> Bool
-checkCondValidity (Cond ord e1 e2) vars = exprType e1 == exprType e2 && cv e1 && cv e2 where
-  cv = flip checkExprValidity vars
+checkCondValidity :: (String -> Maybe Type) -> Cond -> Bool
+checkCondValidity vars (Cond ord e1 e2) = exprType e1 == exprType e2 && validExprs where
+  validExprs = and $ map (checkExprValidity vars) [e1,e2]
 
-checkRhsValidity :: Rhs -> (String -> Maybe Type) -> (String -> Maybe ([Type], Type)) -> Bool
-checkRhsValidity (IfRhs t c e1 e2) vars fns = sameTypes && validCond && validExprs where
+checkRhsValidity :: (String -> Maybe Type) -> (String -> Maybe ([Type], Type)) -> Rhs -> Bool
+checkRhsValidity vars fns (IfRhs t c e1 e2) = sameTypes && validCond && validExprs where
   sameTypes = allSame $ t:(map exprType [e1,e2])
-  validCond = checkCondValidity c vars
-  validExprs = cv e1 && cv e2
-  cv = flip checkExprValidity vars
-checkRhsValidity (FnCallRhs t f es) vars fns = allExprsValid && maybe False checkFn (fns f) where
-  allExprsValid = and $ map (flip checkExprValidity vars) es
+  validCond = checkCondValidity vars c
+  validExprs = and $ map (checkExprValidity vars) [e1,e2]
+checkRhsValidity vars fns (FnCallRhs t f es) = allExprsValid && maybe False checkFn (fns f) where
+  allExprsValid = and $ map (checkExprValidity vars) es
   checkFn :: ([Type],Type) -> Bool
   checkFn (args, retVal) = retValEq && numArgsEq && argsMatchType where
     retValEq = t == retVal
     numArgsEq = length args == length es
     argsMatchType = and $ map (uncurry (==)) $ zip args $ map exprType es
-checkRhsValidity (ExprRhs e) vars _ = checkExprValidity e vars
+checkRhsValidity vars _ (ExprRhs e) = checkExprValidity vars e
 
-checkFnBodyValidity :: FnBody -> (String -> Maybe Type) -> (String -> Maybe ([Type], Type)) -> Bool
-checkFnBodyValidity fb vars fns = isJust $ foldr f (pure vars) $ fnBodyBody fb where
+checkFnBodyValidity :: (String -> Maybe Type) -> (String -> Maybe ([Type], Type)) -> FnBody -> Bool
+checkFnBodyValidity vars fns = isJust . foldr f (pure vars) . fnBodyBody where
   f :: (String, Rhs) -> Maybe (String -> Maybe Type) -> Maybe (String -> Maybe Type)
   f (s, rhs) mVars = do
     vars <- mVars
     guard $ isNothing $ vars s
     guard $ isNothing $ fns  s
-    guard $ checkRhsValidity rhs vars fns
+    guard $ checkRhsValidity vars fns rhs
     pure $ assignEnv s (pure $ rhsType rhs) vars
 
-evalExpr :: Expr -> (String -> Expr) -> Expr
-evalExpr (VarExpr _ s) env = env s
-evalExpr (DataExpr a b cs) env = DataExpr a b $ map (flip evalExpr env) cs
-evalExpr x _ = x
+evalExpr :: (String -> Expr) -> Expr -> Expr
+evalExpr vars (VarExpr _ s) = vars s
+evalExpr vars (DataExpr a b cs) = DataExpr a b $ map (evalExpr vars) cs
+evalExpr _ x = x
 
-evalCond :: Cond -> (String -> Expr) -> Bool
-evalCond (Cond ord e1 e2) env = result where
-  ee1 = evalExpr e1 env
-  ee2 = evalExpr e2 env
+evalCond :: (String -> Expr) -> Cond -> Bool
+evalCond vars (Cond ord e1 e2) = result where
+  ee1 = evalExpr vars e1
+  ee2 = evalExpr vars e2
   result = case (ee1, ee2) of
     (PrimIntExpr   _ a, PrimIntExpr   _ b) -> compare a b == ord
     (PrimFloatExpr _ a, PrimFloatExpr _ b) -> compare a b == ord
     _ -> True -- default value, should never happen
 
-evalRhs :: Rhs -> (String -> Expr) -> (String -> ([Expr] -> Expr)) -> Expr
-evalRhs (IfRhs _ c e1 e2) vars _
-  | evalCond c vars = evalExpr e1 vars
-  | otherwise = evalExpr e2 vars
-evalRhs (FnCallRhs _ f es) _ fns = fns f es
-evalRhs (ExprRhs e) vars _ = evalExpr e vars
+evalRhs :: (String -> Expr) -> (String -> ([Expr] -> Expr)) -> Rhs -> Expr
+evalRhs vars _ (IfRhs _ c e1 e2)
+  | evalCond vars c = evalExpr vars e1
+  | otherwise       = evalExpr vars e2
+evalRhs _ fns (FnCallRhs _ f es) = fns f es
+evalRhs vars _ (ExprRhs e) = evalExpr vars e
 
-evalFnBody :: FnBody -> (String -> ([Expr] -> Expr)) -> (String -> Maybe Expr)
-evalFnBody fb fns = foldr f (const empty) $ fnBodyBody fb where
+evalFnBody :: (String -> ([Expr] -> Expr)) -> FnBody -> (String -> Maybe Expr)
+evalFnBody fns = foldr f (const empty) . fnBodyBody where
   f :: (String, Rhs) -> (String -> Maybe Expr) -> (String -> Maybe Expr)
-  f (s, rhs) vars = assignEnv s (pure $ evalRhs rhs (fromJust . vars) fns) vars
+  f (s, rhs) vars = assignEnv s (pure $ evalRhs (extractExpr . vars) fns rhs) vars
