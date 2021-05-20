@@ -1,4 +1,5 @@
 import Data.List.Extra
+import Data.Function.Slip
 
 -- TODO if statements on tagged unions
 
@@ -56,4 +57,16 @@ checkRhsValidity (IfRhs t c e1 e2) vars fns = sameTypes && validCond && validExp
   validCond = checkCondValidity c vars
   validExprs = cv e1 && cv e2
   cv = flip checkExprValidity vars
-checkRhsValidity (FnCallRhs t f es)
+checkRhsValidity (FnCallRhs t f es) vars fns = allExprsValid && maybe False checkFn (fns f) where
+  allExprsValid = and $ map (flip checkExprValidity vars) es
+  checkFn :: ([Type],Type) -> Bool
+  checkFn (args, retVal) = retValEq && numArgsEq && argsMatchType where
+    retValEq = t == retVal
+    numArgsEq = length args == length es
+    argsMatchType = and $ map (uncurry (==)) $ zip args $ map exprType es
+checkRhsValidity (ExprRhs e) vars _ = checkExprValidity e vars
+
+evalExpr :: Expr -> (String -> Maybe Expr) -> Expr -> Expr
+evalExpr (VarExpr _ s) env errorExpr = maybe errorExpr id $ env s
+evalExpr (DataExpr a b cs) env errorExpr = DataExpr a b $ map (slipr evalExpr env errorExpr) cs
+evalExpr x _ _ = x
