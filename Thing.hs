@@ -41,6 +41,14 @@ isIntType x = x == U8
 isFloatType :: PrimType -> Bool
 isFloatType = not . isIntType
 
+exprToInt :: Expr -> Integer
+exprToInt (PrimIntExpr _ i) = i
+exprToInt _ = 0
+
+exprToFloat :: Expr -> Float
+exprToFloat (PrimFloatExpr _ f) = f
+exprToFloat _ = 0
+
 intBounds :: PrimType -> (Integer, Integer)
 intBounds U8 = (0, 2^8)
 intBounds _ = (0, 0)
@@ -114,3 +122,9 @@ evalFnBody :: (String -> ([Expr] -> Expr)) -> FnBody -> (String -> Maybe Expr)
 evalFnBody fns = foldr f (const empty) . fnBodyBody where
   f :: (String, Rhs) -> (String -> Maybe Expr) -> (String -> Maybe Expr)
   f (s, rhs) vars = assignEnv s (pure $ evalRhs (extractExpr . vars) fns rhs) vars
+
+convertIntFn :: PrimType -> ([Integer] -> Integer) -> ([Expr] -> Expr)
+convertIntFn t f = PrimIntExpr t . f . map exprToInt
+
+convertFloatFn :: PrimType -> ([Float] -> Float) -> ([Expr] -> Expr)
+convertFloatFn t f = PrimFloatExpr t . f . map exprToFloat
