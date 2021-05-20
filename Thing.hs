@@ -1,5 +1,4 @@
 import Data.List.Extra
-import Data.Function.Slip
 
 -- TODO if statements on tagged unions
 
@@ -10,6 +9,7 @@ data Type = Prim PrimType | Data DataTypeDef deriving (Eq, Show)
 data Expr = PrimIntExpr PrimType Integer | PrimFloatExpr PrimType Float | DataExpr DataTypeDef Int [Expr] | VarExpr Type String deriving (Eq, Show)
 data Rhs  = IfRhs Type Cond Expr Expr | FnCallRhs Type String [Expr] | ExprRhs Expr deriving (Eq, Show)
 data Cond = Cond Ordering Expr Expr deriving (Eq, Show)
+data FnBody = FnBody { fnBodyArgs :: [Type], fnBodyReturn :: Type, fnBodyBody :: [(String, Rhs)] }
 
 exprType :: Expr -> Type
 exprType (PrimIntExpr a _) = Prim a
@@ -66,7 +66,23 @@ checkRhsValidity (FnCallRhs t f es) vars fns = allExprsValid && maybe False chec
     argsMatchType = and $ map (uncurry (==)) $ zip args $ map exprType es
 checkRhsValidity (ExprRhs e) vars _ = checkExprValidity e vars
 
-evalExpr :: Expr -> (String -> Maybe Expr) -> Expr -> Expr
-evalExpr (VarExpr _ s) env errorExpr = maybe errorExpr id $ env s
-evalExpr (DataExpr a b cs) env errorExpr = DataExpr a b $ map (slipr evalExpr env errorExpr) cs
-evalExpr x _ _ = x
+evalExpr :: Expr -> (String -> Expr) -> Expr
+evalExpr (VarExpr _ s) env = env s
+evalExpr (DataExpr a b cs) env = DataExpr a b $ map (flip evalExpr env) cs
+evalExpr x _ = x
+
+evalCond :: Cond -> (String -> Expr) -> Bool
+evalCond (Cond ord e1 e2) env = result where
+  ee1 = evalExpr e1 env
+  ee2 = evalExpr e2 env
+  result = case (ee1, ee2) of
+    (PrimIntExpr   _ a, PrimIntExpr   _ b) -> compare a b == ord
+    (PrimFloatExpr _ a, PrimFloatExpr _ b) -> compare a b == ord
+    _ -> True -- default value, should never happen
+
+evalRhs :: Rhs -> (String -> Expr) -> (String -> ([Expr] -> Expr)) -> Expr
+evalRhs (IfRhs _ c e1 e2) vars _
+  | evalCond c vars = evalExpr e1 vars
+  | otherwise = evalExpr e2 vars
+evalRhs (FnCallRhs _ f es) _ fns = fns f es
+evalRhs (ExprRhs e) vars _ = evalExpr e vars
