@@ -1,6 +1,10 @@
 import Data.List.Extra
+import Control.Applicative
+import Control.Monad
+import Data.Maybe
 
 -- TODO if statements on tagged unions
+-- TOOD switch the order of function args so env is first
 
 data PrimType = U8 | Flt deriving (Eq, Show)
 -- TODO is recusion just gonna be cyclic vals or smth
@@ -39,6 +43,11 @@ intBounds _ = (0, 0)
 inBounds :: (Ord a) => a -> (a, a) -> Bool
 inBounds a (b, c) = a >= b && a < c
 
+assignEnv :: (Eq a) => a -> b -> (a -> b) -> (a -> b)
+assignEnv x y f z
+  | z == x = y
+  | otherwise = f z
+
 checkExprValidity :: Expr -> (String -> Maybe Type) -> Bool
 checkExprValidity (PrimIntExpr a b) _ = (isIntType a) && (inBounds b $ intBounds a)
 checkExprValidity (PrimFloatExpr a b) _ = isFloatType a
@@ -66,6 +75,16 @@ checkRhsValidity (FnCallRhs t f es) vars fns = allExprsValid && maybe False chec
     argsMatchType = and $ map (uncurry (==)) $ zip args $ map exprType es
 checkRhsValidity (ExprRhs e) vars _ = checkExprValidity e vars
 
+checkFnBodyValidity :: FnBody -> (String -> Maybe Type) -> (String -> Maybe ([Type], Type)) -> Bool
+checkFnBodyValidity fb vars fns = isJust $ foldr f (pure vars) $ fnBodyBody fb where
+  f :: (String, Rhs) -> Maybe (String -> Maybe Type) -> Maybe (String -> Maybe Type)
+  f (s, rhs) mVars = do
+    vars <- mVars
+    guard $ isNothing $ vars s
+    guard $ isNothing $ fns  s
+    guard $ checkRhsValidity rhs vars fns
+    pure $ assignEnv s (pure $ rhsType rhs) vars
+
 evalExpr :: Expr -> (String -> Expr) -> Expr
 evalExpr (VarExpr _ s) env = env s
 evalExpr (DataExpr a b cs) env = DataExpr a b $ map (flip evalExpr env) cs
@@ -86,3 +105,8 @@ evalRhs (IfRhs _ c e1 e2) vars _
   | otherwise = evalExpr e2 vars
 evalRhs (FnCallRhs _ f es) _ fns = fns f es
 evalRhs (ExprRhs e) vars _ = evalExpr e vars
+
+evalFnBody :: FnBody -> (String -> ([Expr] -> Expr)) -> (String -> Maybe Expr)
+evalFnBody fb fns = foldr f (const empty) $ fnBodyBody fb where
+  f :: (String, Rhs) -> (String -> Maybe Expr) -> (String -> Maybe Expr)
+  f (s, rhs) vars = assignEnv s (pure $ evalRhs rhs (fromJust . vars) fns) vars
