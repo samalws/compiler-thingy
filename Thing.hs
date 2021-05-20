@@ -4,7 +4,6 @@ import Control.Monad
 import Data.Maybe
 
 -- TODO if statements on tagged unions
--- TOOD switch the order of function args so env is first
 
 data PrimType = U8 | Flt deriving (Eq, Show)
 -- TODO is recusion just gonna be cyclic vals or smth
