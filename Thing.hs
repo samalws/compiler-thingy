@@ -4,23 +4,26 @@ import Control.Monad
 import Data.Maybe
 
 -- TODO if statements on tagged unions
+-- TODO test if statements
+-- TODO make functions take args
 
 data PrimType = U8 | Flt deriving (Eq, Show)
 -- TODO is recusion just gonna be cyclic vals or smth
 data DataTypeDef = DataTypeDef { dtCtors :: [[Type]] } deriving (Eq, Show)
 data Type = Prim PrimType | Data DataTypeDef deriving (Eq, Show)
-data Expr = PrimIntExpr PrimType Integer | PrimFloatExpr PrimType Float | DataExpr DataTypeDef Int [Expr] | VarExpr Type String deriving (Eq, Show)
+data Expr = BadExpr | PrimIntExpr PrimType Integer | PrimFloatExpr PrimType Float | DataExpr DataTypeDef Int [Expr] | VarExpr Type String deriving (Eq, Show)
 data Rhs  = IfRhs Type Cond Expr Expr | FnCallRhs Type String [Expr] | ExprRhs Expr deriving (Eq, Show)
 data Cond = Cond Ordering Expr Expr deriving (Eq, Show)
-data FnBody = FnBody { fnBodyArgs :: [Type], fnBodyReturn :: Type, fnBodyBody :: [(String, Rhs)] }
+data FnBody = FnBody { fnBodyArgs :: [(String, Type)], fnBodyReturn :: Type, fnBodyBody :: [(String, Rhs)] }
 
 dummyVoidVal :: Expr
-dummyVoidVal = PrimIntExpr U8 0
+dummyVoidVal = BadExpr
 
 extractExpr :: Maybe Expr -> Expr
 extractExpr = maybe dummyVoidVal id
 
 exprType :: Expr -> Type
+exprType BadExpr = Prim U8
 exprType (PrimIntExpr a _) = Prim a
 exprType (PrimFloatExpr a _) = Prim a
 exprType (DataExpr a _ _) = Data a
@@ -43,10 +46,12 @@ isFloatType = not . isIntType
 
 exprToInt :: Expr -> Integer
 exprToInt (PrimIntExpr _ i) = i
+exprToInt BadExpr = -1000
 exprToInt _ = 0
 
 exprToFloat :: Expr -> Float
 exprToFloat (PrimFloatExpr _ f) = f
+exprToFloat BadExpr = -1000
 exprToFloat _ = 0
 
 intBounds :: PrimType -> (Integer, Integer)
@@ -68,6 +73,7 @@ checkExprValidity vars (DataExpr a b c) = all f (zip c t) && length c == length 
   t = (dtCtors a) !! b
   f (x, y) = checkExprValidity vars x && exprType x == y
 checkExprValidity vars (VarExpr a b) = vars b == Just a
+checkExprValidity _ BadExpr = False
 
 checkCondValidity :: (String -> Maybe Type) -> Cond -> Bool
 checkCondValidity vars (Cond ord e1 e2) = exprType e1 == exprType e2 && validExprs where
@@ -87,10 +93,14 @@ checkRhsValidity vars fns (FnCallRhs t f es) = allExprsValid && maybe False chec
     argsMatchType = and $ map (uncurry (==)) $ zip args $ map exprType es
 checkRhsValidity vars _ (ExprRhs e) = checkExprValidity vars e
 
-checkFnBodyValidity :: (String -> Maybe Type) -> (String -> Maybe ([Type], Type)) -> FnBody -> Bool
-checkFnBodyValidity vars fns = isJust . foldr f (pure vars) . fnBodyBody where
-  f :: (String, Rhs) -> Maybe (String -> Maybe Type) -> Maybe (String -> Maybe Type)
-  f (s, rhs) mVars = do
+checkFnBodyValidity :: (String -> Maybe ([Type], Type)) -> FnBody -> Bool
+checkFnBodyValidity fns fb = argsCheck && bodyCheck where
+  args = fnBodyArgs fb
+  argsCheck = length (nub $ map fst args) == length args
+  startVars = flip lookup args
+  bodyCheck = pure (fnBodyReturn fb) == (join $ fmap ($ "return") $ foldl f (pure startVars) $ fnBodyBody fb)
+  f :: Maybe (String -> Maybe Type) -> (String, Rhs) -> Maybe (String -> Maybe Type)
+  f mVars (s, rhs) = do
     vars <- mVars
     guard $ isNothing $ vars s
     guard $ isNothing $ fns  s
@@ -115,16 +125,32 @@ evalRhs :: (String -> Expr) -> (String -> ([Expr] -> Expr)) -> Rhs -> Expr
 evalRhs vars _ (IfRhs _ c e1 e2)
   | evalCond vars c = evalExpr vars e1
   | otherwise       = evalExpr vars e2
-evalRhs _ fns (FnCallRhs _ f es) = fns f es
+evalRhs vars fns (FnCallRhs _ f es) = fns f $ map (evalExpr vars) es
 evalRhs vars _ (ExprRhs e) = evalExpr vars e
 
 evalFnBody :: (String -> ([Expr] -> Expr)) -> FnBody -> (String -> Maybe Expr)
-evalFnBody fns = foldr f (const empty) . fnBodyBody where
-  f :: (String, Rhs) -> (String -> Maybe Expr) -> (String -> Maybe Expr)
-  f (s, rhs) vars = assignEnv s (pure $ evalRhs (extractExpr . vars) fns rhs) vars
+evalFnBody fns = foldl f (const empty) . fnBodyBody where
+  f :: (String -> Maybe Expr) -> (String, Rhs) -> (String -> Maybe Expr)
+  f vars (s, rhs) = assignEnv s (pure $ evalRhs (extractExpr . vars) fns rhs) vars
+
+evalFnBodyReturn :: (String -> ([Expr] -> Expr)) -> FnBody -> Expr
+evalFnBodyReturn fns fb = extractExpr $ evalFnBody fns fb "return"
 
 convertIntFn :: PrimType -> ([Integer] -> Integer) -> ([Expr] -> Expr)
 convertIntFn t f = PrimIntExpr t . f . map exprToInt
 
 convertFloatFn :: PrimType -> ([Float] -> Float) -> ([Expr] -> Expr)
 convertFloatFn t f = PrimFloatExpr t . f . map exprToFloat
+
+addU8 = convertIntFn U8 sum
+defaultFn = const dummyVoidVal
+
+u8t = Prim U8
+fns = assignEnv "add" addU8 $ const defaultFn
+fnTypes = assignEnv "add" (Just ([u8t, u8t], u8t)) $ const Nothing
+
+rhs1 = ExprRhs $ PrimIntExpr U8 1
+rhs2 = ExprRhs $ VarExpr u8t "a"
+rhs3 = FnCallRhs u8t "add" [VarExpr u8t "a", VarExpr u8t "b"]
+
+fnBody = FnBody [] u8t [("a", rhs1), ("b", rhs2), ("return", rhs3)]
