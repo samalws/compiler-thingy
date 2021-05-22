@@ -4,8 +4,6 @@ import Control.Monad
 import Data.Maybe
 
 -- TODO if statements on tagged unions
--- TODO test if statements
--- TODO make functions take args
 
 data PrimType = U8 | Flt deriving (Eq, Show)
 -- TODO is recusion just gonna be cyclic vals or smth
@@ -66,35 +64,35 @@ assignEnv x y f z
   | z == x = y
   | otherwise = f z
 
-checkExprValidity :: (String -> Maybe Type) -> Expr -> Bool
-checkExprValidity _ (PrimIntExpr a b) = (isIntType a) && (inBounds b $ intBounds a)
-checkExprValidity _ (PrimFloatExpr a b) = isFloatType a
-checkExprValidity vars (DataExpr a b c) = all f (zip c t) && length c == length t where
+checkExprValid :: (String -> Maybe Type) -> Expr -> Bool
+checkExprValid _ (PrimIntExpr a b) = (isIntType a) && (inBounds b $ intBounds a)
+checkExprValid _ (PrimFloatExpr a b) = isFloatType a
+checkExprValid vars (DataExpr a b c) = all f (zip c t) && length c == length t where
   t = (dtCtors a) !! b
-  f (x, y) = checkExprValidity vars x && exprType x == y
-checkExprValidity vars (VarExpr a b) = vars b == Just a
-checkExprValidity _ BadExpr = False
+  f (x, y) = checkExprValid vars x && exprType x == y
+checkExprValid vars (VarExpr a b) = vars b == pure a
+checkExprValid _ BadExpr = False
 
-checkCondValidity :: (String -> Maybe Type) -> Cond -> Bool
-checkCondValidity vars (Cond ord e1 e2) = exprType e1 == exprType e2 && validExprs where
-  validExprs = and $ map (checkExprValidity vars) [e1,e2]
+checkCondValid :: (String -> Maybe Type) -> Cond -> Bool
+checkCondValid vars (Cond ord e1 e2) = exprType e1 == exprType e2 && validExprs where
+  validExprs = and $ map (checkExprValid vars) [e1,e2]
 
-checkRhsValidity :: (String -> Maybe Type) -> (String -> Maybe ([Type], Type)) -> Rhs -> Bool
-checkRhsValidity vars fns (IfRhs t c e1 e2) = sameTypes && validCond && validExprs where
+checkRhsValid :: (String -> Maybe Type) -> (String -> Maybe ([Type], Type)) -> Rhs -> Bool
+checkRhsValid vars fns (IfRhs t c e1 e2) = sameTypes && validCond && validExprs where
   sameTypes = allSame $ t:(map exprType [e1,e2])
-  validCond = checkCondValidity vars c
-  validExprs = and $ map (checkExprValidity vars) [e1,e2]
-checkRhsValidity vars fns (FnCallRhs t f es) = allExprsValid && maybe False checkFn (fns f) where
-  allExprsValid = and $ map (checkExprValidity vars) es
+  validCond = checkCondValid vars c
+  validExprs = and $ map (checkExprValid vars) [e1,e2]
+checkRhsValid vars fns (FnCallRhs t f es) = allExprsValid && maybe False checkFn (fns f) where
+  allExprsValid = and $ map (checkExprValid vars) es
   checkFn :: ([Type],Type) -> Bool
   checkFn (args, retVal) = retValEq && numArgsEq && argsMatchType where
     retValEq = t == retVal
     numArgsEq = length args == length es
     argsMatchType = and $ map (uncurry (==)) $ zip args $ map exprType es
-checkRhsValidity vars _ (ExprRhs e) = checkExprValidity vars e
+checkRhsValid vars _ (ExprRhs e) = checkExprValid vars e
 
-checkFnBodyValidity :: (String -> Maybe ([Type], Type)) -> FnBody -> Bool
-checkFnBodyValidity fns fb = argsCheck && bodyCheck where
+checkFnBodyValid :: (String -> Maybe ([Type], Type)) -> FnBody -> Bool
+checkFnBodyValid fns fb = argsCheck && bodyCheck where
   args = fnBodyArgs fb
   argsCheck = length (nub $ map fst args) == length args
   startVars = flip lookup args
@@ -104,14 +102,19 @@ checkFnBodyValidity fns fb = argsCheck && bodyCheck where
     vars <- mVars
     guard $ isNothing $ vars s
     guard $ isNothing $ fns  s
-    guard $ checkRhsValidity vars fns rhs
+    guard $ checkRhsValid vars fns rhs
     pure $ assignEnv s (pure $ rhsType rhs) vars
 
+checkFnBodyArgsValid :: FnBody -> [Expr] -> Bool
+checkFnBodyArgsValid fb es = map snd (fnBodyArgs fb) == map exprType es
+
+-- precondition: checkExprValid vars expr
 evalExpr :: (String -> Expr) -> Expr -> Expr
 evalExpr vars (VarExpr _ s) = vars s
 evalExpr vars (DataExpr a b cs) = DataExpr a b $ map (evalExpr vars) cs
 evalExpr _ x = x
 
+-- precondition: checkCondValid vars cond
 evalCond :: (String -> Expr) -> Cond -> Bool
 evalCond vars (Cond ord e1 e2) = result where
   ee1 = evalExpr vars e1
@@ -121,6 +124,7 @@ evalCond vars (Cond ord e1 e2) = result where
     (PrimFloatExpr _ a, PrimFloatExpr _ b) -> compare a b == ord
     _ -> True -- default value, should never happen
 
+-- precondition: checkRhsValid vars fns rhs
 evalRhs :: (String -> Expr) -> (String -> ([Expr] -> Expr)) -> Rhs -> Expr
 evalRhs vars _ (IfRhs _ c e1 e2)
   | evalCond vars c = evalExpr vars e1
@@ -128,13 +132,18 @@ evalRhs vars _ (IfRhs _ c e1 e2)
 evalRhs vars fns (FnCallRhs _ f es) = fns f $ map (evalExpr vars) es
 evalRhs vars _ (ExprRhs e) = evalExpr vars e
 
-evalFnBody :: (String -> ([Expr] -> Expr)) -> FnBody -> (String -> Maybe Expr)
-evalFnBody fns = foldl f (const empty) . fnBodyBody where
+-- precondition: checkFnBodyValid fns fb && checkFnBodyArgsValid fb args
+evalFnBody :: (String -> ([Expr] -> Expr)) -> FnBody -> [Expr] -> (String -> Maybe Expr)
+evalFnBody fns fb args = foldl f argVars $ fnBodyBody fb where
   f :: (String -> Maybe Expr) -> (String, Rhs) -> (String -> Maybe Expr)
   f vars (s, rhs) = assignEnv s (pure $ evalRhs (extractExpr . vars) fns rhs) vars
+  argVars :: String -> Maybe Expr
+  argVars = foldr g (const empty) $ zip args $ fnBodyArgs fb
+  g :: (Expr, (String, a)) -> (String -> Maybe Expr) -> (String -> Maybe Expr)
+  g (e, (s, _)) vars = assignEnv s (pure e) vars
 
-evalFnBodyReturn :: (String -> ([Expr] -> Expr)) -> FnBody -> Expr
-evalFnBodyReturn fns fb = extractExpr $ evalFnBody fns fb "return"
+evalFnBodyReturn :: (String -> ([Expr] -> Expr)) -> FnBody -> [Expr] -> Expr
+evalFnBodyReturn fns fb args = extractExpr $ evalFnBody fns fb args "return"
 
 convertIntFn :: PrimType -> ([Integer] -> Integer) -> ([Expr] -> Expr)
 convertIntFn t f = PrimIntExpr t . f . map exprToInt
@@ -147,10 +156,13 @@ defaultFn = const dummyVoidVal
 
 u8t = Prim U8
 fns = assignEnv "add" addU8 $ const defaultFn
-fnTypes = assignEnv "add" (Just ([u8t, u8t], u8t)) $ const Nothing
+fnTypes = assignEnv "add" (pure ([u8t, u8t], u8t)) $ const Nothing
 
-rhs1 = ExprRhs $ PrimIntExpr U8 1
-rhs2 = ExprRhs $ VarExpr u8t "a"
-rhs3 = FnCallRhs u8t "add" [VarExpr u8t "a", VarExpr u8t "b"]
+u8e = PrimIntExpr U8
 
-fnBody = FnBody [] u8t [("a", rhs1), ("b", rhs2), ("return", rhs3)]
+rhs1 = ExprRhs $ u8e 1
+rhs2 = ExprRhs $ VarExpr u8t "d"
+rhs3 = IfRhs u8t (Cond LT (VarExpr u8t "a") (VarExpr u8t "b")) (u8e 5) (u8e 6)
+rhs4 = FnCallRhs u8t "add" [VarExpr u8t "c", VarExpr u8t "c"]
+
+fnBody = FnBody [("d",u8t)] u8t [("a", rhs1), ("b", rhs2), ("c", rhs3), ("return", rhs4)]
