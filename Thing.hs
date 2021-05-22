@@ -2,8 +2,12 @@ import Data.List.Extra
 import Control.Applicative
 import Control.Monad
 import Data.Maybe
+import Safe
 
 -- TODO if statements on tagged unions
+
+
+-- TYPE DEFINITIONS
 
 data PrimType = U8 | Flt deriving (Eq, Show)
 -- TODO is recusion just gonna be cyclic vals or smth
@@ -12,7 +16,14 @@ data Type = Prim PrimType | Data DataTypeDef deriving (Eq, Show)
 data Expr = BadExpr | PrimIntExpr PrimType Integer | PrimFloatExpr PrimType Float | DataExpr DataTypeDef Int [Expr] | VarExpr Type String deriving (Eq, Show)
 data Rhs  = IfRhs Type Cond Expr Expr | FnCallRhs Type String [Expr] | ExprRhs Expr deriving (Eq, Show)
 data Cond = Cond Ordering Expr Expr deriving (Eq, Show)
-data FnBody = FnBody { fnBodyArgs :: [(String, Type)], fnBodyReturn :: Type, fnBodyBody :: [(String, Rhs)] }
+data FnBody = FnBody { fnBodyArgs :: [(String, Type)], fnBodyRet :: Type, fnBodyBody :: [(String, Rhs)] }
+data FnDef = FnDef String FnBody
+
+
+-- BASIC FUNCTIONS
+
+enclParens :: String -> String
+enclParens s = "(" <> s <> ")"
 
 dummyVoidVal :: Expr
 dummyVoidVal = BadExpr
@@ -64,6 +75,9 @@ assignEnv x y f z
   | z == x = y
   | otherwise = f z
 
+
+-- CHECKING VALIDITY
+
 checkExprValid :: (String -> Maybe Type) -> Expr -> Bool
 checkExprValid _ (PrimIntExpr a b) = (isIntType a) && (inBounds b $ intBounds a)
 checkExprValid _ (PrimFloatExpr a b) = isFloatType a
@@ -92,11 +106,11 @@ checkRhsValid vars fns (FnCallRhs t f es) = allExprsValid && maybe False checkFn
 checkRhsValid vars _ (ExprRhs e) = checkExprValid vars e
 
 checkFnBodyValid :: (String -> Maybe ([Type], Type)) -> FnBody -> Bool
-checkFnBodyValid fns fb = argsCheck && bodyCheck where
+checkFnBodyValid fns fb = argsCheck && bodyCheck && returnIsLast where
   args = fnBodyArgs fb
   argsCheck = length (nub $ map fst args) == length args
   startVars = flip lookup args
-  bodyCheck = pure (fnBodyReturn fb) == (join $ fmap ($ "return") $ foldl f (pure startVars) $ fnBodyBody fb)
+  bodyCheck = pure (fnBodyRet fb) == (join $ fmap ($ "return") $ foldl f (pure startVars) $ fnBodyBody fb)
   f :: Maybe (String -> Maybe Type) -> (String, Rhs) -> Maybe (String -> Maybe Type)
   f mVars (s, rhs) = do
     vars <- mVars
@@ -104,9 +118,13 @@ checkFnBodyValid fns fb = argsCheck && bodyCheck where
     guard $ isNothing $ fns  s
     guard $ checkRhsValid vars fns rhs
     pure $ assignEnv s (pure $ rhsType rhs) vars
+  returnIsLast = maybe False ((== "return") . fst) $ lastMay $ fnBodyBody fb
 
 checkFnBodyArgsValid :: FnBody -> [Expr] -> Bool
 checkFnBodyArgsValid fb es = map snd (fnBodyArgs fb) == map exprType es
+
+
+-- EVALUATING
 
 -- precondition: checkExprValid vars expr
 evalExpr :: (String -> Expr) -> Expr -> Expr
@@ -150,6 +168,55 @@ convertIntFn t f = PrimIntExpr t . f . map exprToInt
 
 convertFloatFn :: PrimType -> ([Float] -> Float) -> ([Expr] -> Expr)
 convertFloatFn t f = PrimFloatExpr t . f . map exprToFloat
+
+
+-- TO RUST
+
+class ToRust a where
+  toRust :: a -> String
+
+instance ToRust PrimType where
+  toRust U8 = "u8"
+  toRust Flt = "f32"
+
+instance ToRust DataTypeDef where
+  toRust _ = "TODO"
+
+instance ToRust Type where
+  toRust (Prim t) = toRust t
+  toRust (Data t) = toRust t
+
+instance ToRust Expr where
+  toRust BadExpr = "()"
+  toRust (PrimIntExpr   t i) = show i <> toRust t
+  toRust (PrimFloatExpr t f) = show f <> toRust t
+  toRust (DataExpr _ _ _) = "TODO"
+  toRust (VarExpr _ s) = s
+
+instance ToRust Cond where
+  toRust (Cond c a b) = enclParens (toRust a) <> cc <> enclParens (toRust b) where
+    cc = case c of
+      LT -> "<"
+      GT -> ">"
+      EQ -> "=="
+
+instance ToRust Rhs where
+  toRust (IfRhs _ c a b) = "if (" <> toRust c <> ") { " <> toRust a <> " } else { " <> toRust b <> " }"
+  toRust (FnCallRhs _ s es) = s <> (enclParens $ intercalate ", " $ map toRust es)
+  toRust (ExprRhs e) = toRust e
+
+instance ToRust FnDef where
+  toRust (FnDef s fb) = "fn " <> s <> enclParens args <> " -> " <> ret <> " { " <> body <> " }" where
+    args = intercalate ", " $ map f $ fnBodyArgs fb
+    ret = toRust $ fnBodyRet fb
+    body = intercalate "; " $ map g $ fnBodyBody fb
+    f (s, t) = s <> ": " <> toRust t
+    g ("return", e) = toRust e
+    g (s, e) = "let " <> s <> " = " <> toRust e
+
+
+
+-- TESTING
 
 addU8 = convertIntFn U8 sum
 defaultFn = const dummyVoidVal
