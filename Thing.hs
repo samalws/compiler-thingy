@@ -11,13 +11,20 @@ import Safe
 
 data PrimType = U8 | Flt deriving (Eq, Show)
 -- TODO is recusion just gonna be cyclic vals or smth
-data DataTypeDef = DataTypeDef { dtCtors :: [[Type]] } deriving (Eq, Show)
+data DataTypeDef = DataTypeDef { dtName :: String, dtCtors :: [[Type]] }
 data Type = Prim PrimType | Data DataTypeDef deriving (Eq, Show)
 data Expr = BadExpr | PrimIntExpr PrimType Integer | PrimFloatExpr PrimType Float | DataExpr DataTypeDef Int [Expr] | VarExpr Type String deriving (Eq, Show)
 data Rhs  = IfRhs Type Cond Expr Expr | FnCallRhs Type String [Expr] | ExprRhs Expr deriving (Eq, Show)
 data Cond = Cond Ordering Expr Expr deriving (Eq, Show)
 data FnBody = FnBody { fnBodyArgs :: [(String, Type)], fnBodyRet :: Type, fnBodyBody :: [(String, Rhs)] }
 data FnDef = FnDef String FnBody
+
+-- so that we can have cyclic types and still test for equality and print
+instance Eq DataTypeDef where
+  a == b = dtName a == dtName b
+
+instance Show DataTypeDef where
+  show a = "DataTypeDef \"" <> dtName a <> "\""
 
 
 -- BASIC FUNCTIONS
@@ -180,17 +187,25 @@ instance ToRust PrimType where
   toRust Flt = "f32"
 
 instance ToRust DataTypeDef where
-  toRust _ = "TODO"
+  toRust dt = "enum " <> dtName dt <> " { " <> options <> " }" where
+    options = intercalate ", " optionList
+    optionList = map f $ zip [0..] $ dtCtors dt
+    f (n, ts) = "Opt" <> show n <> g ts
+    g [] = ""
+    g ts = enclParens $ intercalate ", " $ map toRust ts
 
 instance ToRust Type where
   toRust (Prim t) = toRust t
-  toRust (Data t) = toRust t
+  toRust (Data t) = dtName t
 
 instance ToRust Expr where
   toRust BadExpr = "()"
   toRust (PrimIntExpr   t i) = show i <> toRust t
   toRust (PrimFloatExpr t f) = show f <> toRust t
-  toRust (DataExpr _ _ _) = "TODO"
+  toRust (DataExpr t n es) = dtName t <> "::Opt" <> show n <> args where
+    args
+      | es == [] = ""
+      | otherwise = enclParens $ intercalate ", " $ map toRust es
   toRust (VarExpr _ s) = s
 
 instance ToRust Cond where
