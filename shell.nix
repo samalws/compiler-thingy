@@ -1,7 +1,10 @@
 { pkgs ? import <nixpkgs> {} }:
 pkgs.mkShell {
-  nativeBuildInputs = [ (pkgs.haskellPackages.ghcWithPackages (p: [
-    p.extra
-    p.safe
-  ])) ];
+  nativeBuildInputs = [
+    pkgs.rustc
+    (pkgs.haskellPackages.ghcWithPackages (p: [
+      p.extra
+      p.safe
+    ]))
+  ];
 }

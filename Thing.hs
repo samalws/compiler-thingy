@@ -118,40 +118,40 @@ checkExprValidMatch vars d@(DataExpr a b c) = all f (zip c t) && length c == len
   f (x, y) = checkExprValidMatch vars x && exprType x == y
   varsOnlyOnce = not $ containsDups $ g d
   g (VarExpr _ s) = [s]
-  g (DataExpr _ _ es) = mconcat $ fmap g es
+  g (DataExpr _ _ es) = mconcat $ g <$> es
   g _ = []
 checkExprValidMatch vars (VarExpr _ b) = vars b == empty
 checkExprValidMatch vars a = checkExprValid vars a
 
 checkCondValid :: (String -> Maybe Type) -> Cond -> Bool
 checkCondValid vars (Cond ord e1 e2) = exprType e1 == exprType e2 && validExprs where
-  validExprs = and $ fmap (checkExprValid vars) [e1,e2]
+  validExprs = and $ checkExprValid vars <$> [e1,e2]
 
 checkRhsValid :: (String -> Maybe Type) -> (String -> Maybe ([Type], Type)) -> Rhs -> Bool
 checkRhsValid vars _ (IfRhs t c e1 e2) = sameTypes && validCond && validExprs where
-  sameTypes = allSame $ t:(fmap exprType [e1,e2])
+  sameTypes = allSame $ t:(exprType <$> [e1,e2])
   validCond = checkCondValid vars c
-  validExprs = and $ fmap (checkExprValid vars) [e1,e2]
+  validExprs = and $ checkExprValid vars <$> [e1,e2]
 checkRhsValid vars _ (MatchRhs t m es) = sameRetTypes && sameMatchTypes && validMatchee && validMatches && validExprs where
-  sameRetTypes = allSame $ t:(fmap (exprType . fst) es)
-  sameMatchTypes = allSame $ fmap exprType $ m:(fmap snd es)
+  sameRetTypes = allSame $ t:(exprType . fst <$> es)
+  sameMatchTypes = allSame $ exprType <$> m:(snd <$> es)
   validMatchee = checkExprValid vars m
-  validMatches = and $ fmap (checkExprValidMatch vars . fst) es
-  validExprs = and $ fmap f es
+  validMatches = and $ checkExprValidMatch vars . fst <$> es
+  validExprs = and $ f <$> es
   f (match, ret) = checkExprValid (applyMatchToEnv match vars) ret
 checkRhsValid vars fns (FnCallRhs t f es) = allExprsValid && maybe False checkFn (fns f) where
-  allExprsValid = and $ fmap (checkExprValid vars) es
+  allExprsValid = and $ checkExprValid vars <$> es
   checkFn :: ([Type],Type) -> Bool
   checkFn (args, retVal) = retValEq && numArgsEq && argsMatchType where
     retValEq = t == retVal
     numArgsEq = length args == length es
-    argsMatchType = and $ fmap (uncurry (==)) $ zip args $ fmap exprType es
+    argsMatchType = and $ (uncurry (==) <$>) $ zip args $ exprType <$> es
 checkRhsValid vars _ (ExprRhs e) = checkExprValid vars e
 
 checkFnBodyValid :: (String -> Maybe ([Type], Type)) -> FnBody -> Bool
 checkFnBodyValid fns fb = argsCheck && bodyCheck && returnIsLast where
   args = fnBodyArgs fb
-  argsCheck = length (nub $ fmap fst args) == length args
+  argsCheck = length (nub $ fst <$> args) == length args
   startVars = flip lookup args
   bodyCheck = pure (fnBodyRet fb) == (join $ fmap ($ "return") $ foldl f (pure startVars) $ fnBodyBody fb)
   f :: Maybe (String -> Maybe Type) -> (String, Rhs) -> Maybe (String -> Maybe Type)
@@ -164,7 +164,7 @@ checkFnBodyValid fns fb = argsCheck && bodyCheck && returnIsLast where
   returnIsLast = maybe False ((== "return") . fst) $ lastMay $ fnBodyBody fb
 
 checkFnBodyArgsValid :: FnBody -> [Expr] -> Bool
-checkFnBodyArgsValid fb es = fmap snd (fnBodyArgs fb) == fmap exprType es
+checkFnBodyArgsValid fb es = (snd <$> fnBodyArgs fb) == (exprType <$> es)
 
 
 -- EVALUATING
@@ -172,7 +172,7 @@ checkFnBodyArgsValid fb es = fmap snd (fnBodyArgs fb) == fmap exprType es
 -- precondition: checkExprValid vars expr
 evalExpr :: (String -> Expr) -> Expr -> Expr
 evalExpr vars (VarExpr _ s) = vars s
-evalExpr vars (DataExpr a b cs) = DataExpr a b $ fmap (evalExpr vars) cs
+evalExpr vars (DataExpr a b cs) = DataExpr a b $ evalExpr vars <$> cs
 evalExpr _ x = x
 
 -- precondition: checkCondValid vars cond
@@ -190,9 +190,9 @@ evalRhs :: (String -> Expr) -> (String -> ([Expr] -> Expr)) -> Rhs -> Expr
 evalRhs vars _ (IfRhs _ c e1 e2)
   | evalCond vars c = evalExpr vars e1
   | otherwise       = evalExpr vars e2
-evalRhs vars _ (MatchRhs _ m es) = extractExpr $ headMay $ fmap snd $ filter fst $ fmap f es where
+evalRhs vars _ (MatchRhs _ m es) = extractExpr $ headMay $ fmap snd $ filter fst $ f <$> es where
   f = bimap (checkMatch $ evalExpr vars m) (evalExpr vars)
-evalRhs vars fns (FnCallRhs _ f es) = fns f $ fmap (evalExpr vars) es
+evalRhs vars fns (FnCallRhs _ f es) = fns f $ evalExpr vars <$> es
 evalRhs vars _ (ExprRhs e) = evalExpr vars e
 
 -- precondition: checkFnBodyValid fns fb && checkFnBodyArgsValid fb args
@@ -230,7 +230,7 @@ instance ToRust DataTypeDef where
     optionList = fmap f $ zip [0..] $ dtCtors dt
     f (n, ts) = "Opt" <> show n <> g ts
     g [] = ""
-    g ts = enclParens $ intercalate ", " $ fmap toRust ts
+    g ts = enclParens $ intercalate ", " $ toRust <$> ts
 
 instance ToRust Type where
   toRust (Prim t) = toRust t
@@ -243,7 +243,7 @@ instance ToRust Expr where
   toRust (DataExpr t n es) = dtName t <> "::Opt" <> show n <> args where
     args
       | es == [] = ""
-      | otherwise = enclParens $ intercalate ", " $ fmap toRust es
+      | otherwise = enclParens $ intercalate ", " $ toRust <$> es
   toRust (VarExpr _ s) = s
 
 instance ToRust Cond where
@@ -258,14 +258,14 @@ instance ToRust Rhs where
   toRust (MatchRhs _ m es) = "match (" <> toRust m <> ") { " <> body <> " }" where
     body = intercalate ", " $ map f es
     f (a, b) = toRust a <> " => " <> toRust b
-  toRust (FnCallRhs _ s es) = s <> (enclParens $ intercalate ", " $ fmap toRust es)
+  toRust (FnCallRhs _ s es) = s <> (enclParens $ intercalate ", " $ toRust <$> es)
   toRust (ExprRhs e) = toRust e
 
 instance ToRust FnDef where
   toRust (FnDef s fb) = "fn " <> s <> enclParens args <> " -> " <> ret <> " { " <> body <> " }" where
-    args = intercalate ", " $ fmap f $ fnBodyArgs fb
+    args = intercalate ", " $ f <$> fnBodyArgs fb
     ret = toRust $ fnBodyRet fb
-    body = intercalate "; " $ fmap g $ fnBodyBody fb
+    body = intercalate "; " $ g <$> fnBodyBody fb
     f (s, t) = s <> ": " <> toRust t
     g ("return", e) = toRust e
     g (s, e) = "let " <> s <> " = " <> toRust e
